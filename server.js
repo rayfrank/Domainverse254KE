@@ -1,4 +1,3 @@
-/* server.js */
 require('dotenv').config();
 
 const express = require('express');
@@ -12,67 +11,19 @@ app.use(bodyParser.json());
 /* ------------------------------------------------------------------ */
 /* 1) Registrar directory                                              */
 /* ------------------------------------------------------------------ */
-/* NOTE:
-   - 'site' is the marketing site users recognize.
-   - 'base' is where WHMCS (or the billing portal) lives. We use it
-     to build the deep-link that opens the registrar WITH the domain
-     already searched (pricing visible).
-   - If you’re unsure of a base, leave it equal to the site; you can
-     refine later without changing Unity.
-*/
 const REGISTRARS = [
-  {
-    slug: 'hostpinnacle',
-    name: 'HostPinnacle',
-    site: 'https://www.hostpinnacle.co.ke/',
-    base: 'https://www.hostpinnacle.co.ke'      // WHMCS lives here
-  },
-  {
-    slug: 'truehost',
-    name: 'Truehost',
-    site: 'https://truehost.co.ke/',
-    base: 'https://truehost.co.ke'              // WHMCS lives here
-  },
-  {
-    slug: 'eac-hostafrica',
-    name: 'EAC Directory (HOSTAFRICA)',
-    site: 'https://hostafrica.ke/',
-    base: 'https://portal.hostafrica.ke'        // Customer portal
-  },
-  {
-    slug: 'safaricom',
-    name: 'Safaricom',
-    site: 'https://domains.safaricom.co.ke/',
-    base: 'https://domains.safaricom.co.ke'
-  },
-  {
-    slug: 'digital-webframe',
-    name: 'Digital Webframe Solutions',
-    site: 'https://digitalwebframe.com/',
-    base: 'https://clients.digitalwebframe.com'
-  },
-  {
-    slug: 'movetech',
-    name: 'Movetech Solutions Ltd',
-    site: 'https://movetechsolutions.co.ke/',
-    base: 'https://clients.movetechsolutions.co.ke'
-  },
-  {
-    slug: 'webhost-kenya',
-    name: 'Webhost Kenya',
-    site: 'https://webhostkenya.co.ke/',
-    base: 'https://clients.webhostkenya.co.ke'
-  },
-  {
-    slug: 'softlink-options',
-    name: 'Softlink Options Limited',
-    site: 'https://softlinkoptions.co.ke/',
-    base: 'https://billing.softlinkoptions.co.ke'
-  }
+  { slug: 'hostpinnacle',   name: 'HostPinnacle',                 site: 'https://www.hostpinnacle.co.ke/',   base: 'https://www.hostpinnacle.co.ke' },
+  { slug: 'truehost',       name: 'Truehost',                      site: 'https://truehost.co.ke/',           base: 'https://truehost.co.ke' },
+  { slug: 'eac-hostafrica', name: 'EAC Directory (HOSTAFRICA)',    site: 'https://hostafrica.ke/',            base: 'https://portal.hostafrica.ke' },
+  { slug: 'safaricom',      name: 'Safaricom',                      site: 'https://domains.safaricom.co.ke/',  base: 'https://domains.safaricom.co.ke' },
+  { slug: 'digital-web',    name: 'Digital Webframe Solutions',     site: 'https://digitalwebframe.com/',      base: 'https://clients.digitalwebframe.com' },
+  { slug: 'movetech',       name: 'Movetech Solutions Ltd',         site: 'https://movetechsolutions.co.ke/',  base: 'https://clients.movetechsolutions.co.ke' },
+  { slug: 'webhost-kenya',  name: 'Webhost Kenya',                  site: 'https://webhostkenya.co.ke/',       base: 'https://clients.webhostkenya.co.ke' },
+  { slug: 'softlink',       name: 'Softlink Options Limited',       site: 'https://softlinkoptions.co.ke/',    base: 'https://billing.softlinkoptions.co.ke' }
 ];
 
 /* ------------------------------------------------------------------ */
-/* 2) Approved KeNIC TLDs (short, stable list; extend anytime)        */
+/* 2) KeNIC TLDs                                                       */
 /* ------------------------------------------------------------------ */
 const TLD_LIST = [
   { tld: '.ke',       restricted: true,  note: '2nd level; restricted' },
@@ -88,31 +39,22 @@ const TLD_LIST = [
 ];
 
 /* ------------------------------------------------------------------ */
-/* 3) Helpers to build registrar deep links                            */
+/* 3) Deep link helpers                                                */
 /* ------------------------------------------------------------------ */
-/* Most Kenyan registrars use WHMCS. This deep link opens the cart with
-   the given domain already searched (pricing ready). */
 function whmcsLink(base, domain) {
   return `${base.replace(/\/+$/,'')}/cart.php?a=add&domain=register&query=${encodeURIComponent(domain)}`;
 }
 
-/* If a registrar needs a special format, add it in this switch. */
 function buildDeepLink(reg, domain) {
   const d = (domain || '').trim();
   if (!d) return reg.site;
 
-  switch (reg.slug) {
-    // Example custom:
-    // case 'some-registrar':
-    //   return `${reg.base}/domainchecker.php?search=${encodeURIComponent(d)}`;
-
-    default:
-      return whmcsLink(reg.base || reg.site, d);
-  }
+  // add registrar-specific overrides here if needed
+  return whmcsLink(reg.base || reg.site, d);
 }
 
 /* ------------------------------------------------------------------ */
-/* 4) API endpoints for Unity                                          */
+/* 4) API for Unity                                                    */
 /* ------------------------------------------------------------------ */
 app.get('/', (req, res) => res.send('KeNIC Option-B API OK'));
 
@@ -125,13 +67,44 @@ app.get('/kenic/tlds', (req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
-/* 5) Landing page (radio pick ONE domain + registrar list)            */
+/* 5) Landing page                                                     */
 /* ------------------------------------------------------------------ */
+function collectDomainsFromQuery(q) {
+  const out = [];
+
+  const eat = (val) => {
+    if (!val) return;
+    const push = s => {
+      s = String(s || '').trim().toLowerCase();
+      if (s) out.push(s);
+    };
+
+    if (Array.isArray(val)) { val.forEach(e => eat(e)); return; }
+
+    const str = String(val).trim();
+    if (!str) return;
+
+    // JSON array?
+    if (str.startsWith('[')) {
+      try {
+        const arr = JSON.parse(str);
+        if (Array.isArray(arr)) arr.forEach(push);
+        return;
+      } catch (_) {}
+    }
+
+    // split common separators
+    str.split(/[,\|;]+/).forEach(push);
+  };
+
+  // Accept both 'domains' and 'names' (any shape)
+  eat(q.domains);
+  eat(q.names);
+  return [...new Set(out)]; // de-dupe
+}
+
 app.get('/kenic/landing', (req, res) => {
-  const raw = (req.query.domains || '').trim();
-  const domains = raw
-    ? raw.split(',').map(s => s.trim()).filter(Boolean)
-    : [];
+  const domains = collectDomainsFromQuery(req.query);
   const preselect = domains[0] || '';
 
   const page = renderLanding(domains, preselect);
@@ -167,16 +140,16 @@ function renderLanding(domains, selected) {
 <style>
   :root { --bg:#111214; --card:#1b1d21; --text:#e7e7ea; --muted:#a0a0aa; --accent:#7b5cff; }
   * { box-sizing:border-box; }
-  body { margin:0; font-family:system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', sans-serif; background:var(--bg); color:var(--text); }
+  body { margin:0; font-family:system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif; background:var(--bg); color:var(--text); }
   .wrap { max-width:1100px; margin:32px auto; padding:0 20px; }
   h1 { font-weight:800; font-size:38px; margin:0 0 8px 0; }
-  .section { background:var(--card); border:1px solid #2a2d33; border-radius:14px; padding:18px 18px; margin-top:16px; }
+  .section { background:var(--card); border:1px solid #2a2d33; border-radius:14px; padding:18px; margin-top:16px; }
   .muted { color:var(--muted); }
   .pill { background:#23252b; color:#ccc; border:1px solid #31343b; padding:6px 10px; border-radius:999px; font-size:13px; }
   .heading { display:flex; gap:10px; align-items:center; margin-bottom:10px; }
-  .radio-row { display:flex; align-items:center; gap:14px; padding:12px 12px; border-radius:10px; border:1px solid #2a2d33; background:#17191c; margin:8px 0; }
+  .radio-row { display:flex; align-items:center; gap:14px; padding:12px; border-radius:10px; border:1px solid #2a2d33; background:#17191c; margin:8px 0; }
   .radio-row input { width:18px; height:18px; }
-  .reg-row { display:flex; align-items:center; justify-content:space-between; padding:12px 12px; border-radius:10px; border:1px solid #2a2d33; background:#17191c; margin:8px 0; }
+  .reg-row { display:flex; align-items:center; justify-content:space-between; padding:12px; border-radius:10px; border:1px solid #2a2d33; background:#17191c; margin:8px 0; }
   .reg-name { font-weight:600; font-size:18px; }
   .btn { display:inline-block; color:white; text-decoration:none; background:var(--accent); padding:10px 14px; border-radius:10px; }
   .btn:hover { filter:brightness(1.05); }
@@ -243,7 +216,6 @@ function renderLanding(domains, selected) {
 app.get('/kenic/jump', (req, res) => {
   const slug   = String(req.query.slug || '').trim();
   const domain = String(req.query.domain || '').trim();
-
   const reg = REGISTRARS.find(r => r.slug === slug);
   if (!reg) return res.status(404).send('Unknown registrar');
 
