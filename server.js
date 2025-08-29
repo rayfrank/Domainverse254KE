@@ -1,214 +1,233 @@
 // server.js
-// KeNIC option B backend: TLDs, registrars, and a landing page
-// where the user picks ONE domain and we deep-link to registrar search/cart.
-
+require("dotenv").config();
 const express = require("express");
 const bodyParser = require("body-parser");
 
 const app = express();
+const PORT = process.env.PORT || 10000;
+
 app.use(bodyParser.json());
 
-// ---------- Data ----------
-
-// KeNIC .KE family (mark some as restricted to display in the app if desired)
-const TLD_LIST = [
-  { tld: ".ke",     restricted: false, note: "Direct .ke" },
-  { tld: ".co.ke",  restricted: false, note: "Companies / commercial" },
-  { tld: ".or.ke",  restricted: false, note: "Organizations" },
-  { tld: ".ne.ke",  restricted: false, note: "Networks / providers" },
-  { tld: ".go.ke",  restricted: true,  note: "Government (restricted)" },
-  { tld: ".ac.ke",  restricted: true,  note: "Academic (restricted)" },
-  { tld: ".sc.ke",  restricted: true,  note: "Schools (restricted)" },
-  { tld: ".me.ke",  restricted: false, note: "Personal" },
-  { tld: ".info.ke",restricted: false, note: "Information" },
-  { tld: ".mobi.ke",restricted: false, note: "Mobile" },
-];
-
-// A compact list of accredited registrars (add/update freely)
-const ACCREDITED_REGISTRARS = [
-  { name: "HostPinnacle",                 site: "https://hostpinnacle.co.ke/" },
-  { name: "Truehost",                     site: "https://truehost.co.ke/" },
-  { name: "EAC Directory (HOSTAFRICA)",   site: "https://www.hostafrica.ke/" },
-  { name: "Safaricom",                    site: "https://www.safaricom.co.ke/" },
-  { name: "Digital Webframe",             site: "https://digitalwebframe.com/" },
-  { name: "Movetech Solutions",           site: "https://movetechsolutions.com/" },
-  { name: "Webhost Kenya",                site: "https://webhostkenya.co.ke/" },
-  { name: "Softlink Options",             site: "https://softlinkoptions.co.ke/" }
-];
-
-// ---------- Deep-link builders (auto-search/pricing on registrar) ----------
-
-function normalizeBase(url) {
-  return String(url || "").replace(/\/+$/, "");
-}
-
-// Many registrars use WHMCS. Typical deep link:
-//   https://<host>/cart.php?a=add&domain=register&query=<domain>
-const DEEP_LINK_BUILDERS = {
-  "hostpinnacle.co.ke":     d => `https://hostpinnacle.co.ke/cart.php?a=add&domain=register&query=${encodeURIComponent(d)}`,
-  "truehost.co.ke":         d => `https://truehost.co.ke/cloud/cart.php?a=add&domain=register&query=${encodeURIComponent(d)}`,
-  "hostafrica.ke":          d => `https://www.hostafrica.ke/cart.php?a=add&domain=register&query=${encodeURIComponent(d)}`,
-  "safaricom.co.ke":        d => `https://domains.safaricom.co.ke/cart.php?a=add&domain=register&query=${encodeURIComponent(d)}`,
-  "digitalwebframe.com":    d => `https://digitalwebframe.com/cart.php?a=add&domain=register&query=${encodeURIComponent(d)}`,
-  "movetechsolutions.com":  d => `https://movetechsolutions.com/cart.php?a=add&domain=register&query=${encodeURIComponent(d)}`,
-  "webhostkenya.co.ke":     d => `https://webhostkenya.co.ke/cart.php?a=add&domain=register&query=${encodeURIComponent(d)}`,
-  "softlinkoptions.co.ke":  d => `https://softlinkoptions.co.ke/cart.php?a=add&domain=register&query=${encodeURIComponent(d)}`
+// ---- Registrar catalog ------------------------------------------------------
+// Add or adjust searchUrl once you've confirmed the pattern.
+// {DOMAIN} will be replaced, URL-encoded.
+const registrarsBySuffix = {
+  ".ke": [
+    { name: "HostPinnacle", href: "https://hostpinnacle.co.ke/" }, // no public deep link
+    { name: "Truehost", href: "https://truehost.co.ke/", searchUrl: "https://truehost.co.ke/?search={DOMAIN}" },
+    { name: "EAC Directory (HOSTAFRICA)", href: "https://www.hostafrica.ke/" /*, searchUrl: "https://www.hostafrica.ke/domain-name-search/?domain={DOMAIN}" */ },
+    { name: "Safaricom", href: "https://www.safaricom.co.ke/business/cloud-solutions/domains" },
+    { name: "Digital Webframe", href: "https://digitalwebframe.com/" },
+    { name: "Movetech Solutions Ltd", href: "https://movetechsolutions.com/" },
+    { name: "Webhost Kenya", href: "https://webhostkenya.co.ke/" },
+    { name: "Softlink Options", href: "https://softlinkoptions.co.ke/" },
+  ],
+  ".co.ke": [
+    { name: "HostPinnacle", href: "https://hostpinnacle.co.ke/" },
+    { name: "Truehost", href: "https://truehost.co.ke/", searchUrl: "https://truehost.co.ke/?search={DOMAIN}" },
+    { name: "EAC Directory (HOSTAFRICA)", href: "https://www.hostafrica.ke/" },
+    { name: "Safaricom", href: "https://www.safaricom.co.ke/business/cloud-solutions/domains" },
+  ],
+  ".go.ke": [
+    { name: "HostPinnacle", href: "https://hostpinnacle.co.ke/" },
+    { name: "Truehost", href: "https://truehost.co.ke/", searchUrl: "https://truehost.co.ke/?search={DOMAIN}" },
+    { name: "EAC Directory (HOSTAFRICA)", href: "https://www.hostafrica.ke/" },
+    { name: "Safaricom", href: "https://www.safaricom.co.ke/business/cloud-solutions/domains" },
+  ],
+  ".me.ke": [
+    { name: "HostPinnacle", href: "https://hostpinnacle.co.ke/" },
+    { name: "Truehost", href: "https://truehost.co.ke/", searchUrl: "https://truehost.co.ke/?search={DOMAIN}" },
+  ],
+  ".info.ke": [
+    { name: "HostPinnacle", href: "https://hostpinnacle.co.ke/" },
+    { name: "Truehost", href: "https://truehost.co.ke/", searchUrl: "https://truehost.co.ke/?search={DOMAIN}" },
+  ],
+  ".or.ke": [
+    { name: "HostPinnacle", href: "https://hostpinnacle.co.ke/" },
+    { name: "Truehost", href: "https://truehost.co.ke/", searchUrl: "https://truehost.co.ke/?search={DOMAIN}" },
+  ],
+  ".ac.ke": [
+    { name: "HostPinnacle", href: "https://hostpinnacle.co.ke/" },
+    { name: "Truehost", href: "https://truehost.co.ke/", searchUrl: "https://truehost.co.ke/?search={DOMAIN}" },
+  ],
+  ".sc.ke": [
+    { name: "HostPinnacle", href: "https://hostpinnacle.co.ke/" },
+    { name: "Truehost", href: "https://truehost.co.ke/", searchUrl: "https://truehost.co.ke/?search={DOMAIN}" },
+  ],
+  ".ne.ke": [
+    { name: "HostPinnacle", href: "https://hostpinnacle.co.ke/" },
+    { name: "Truehost", href: "https://truehost.co.ke/", searchUrl: "https://truehost.co.ke/?search={DOMAIN}" },
+  ],
+  ".mobi.ke": [
+    { name: "HostPinnacle", href: "https://hostpinnacle.co.ke/" },
+    { name: "Truehost", href: "https://truehost.co.ke/", searchUrl: "https://truehost.co.ke/?search={DOMAIN}" },
+  ],
 };
 
-function buildDeepLink(site, domain) {
-  const base = normalizeBase(site);
-  const host = base.replace(/^https?:\/\/([^/]+).*/, "$1").toLowerCase();
-
-  for (const key of Object.keys(DEEP_LINK_BUILDERS)) {
-    if (host.includes(key)) return DEEP_LINK_BUILDERS[key](domain);
-  }
-  // fallback: generic WHMCS path (if registrar doesn't use WHMCS,
-  // user still lands on a cart/search page and can search there)
-  return `${base}/cart.php?a=add&domain=register&query=${encodeURIComponent(domain)}`;
+// ---- Helpers ----------------------------------------------------------------
+function normSuffix(sfx) {
+  if (!sfx) return ".ke";
+  sfx = sfx.trim();
+  return sfx.startsWith(".") ? sfx.toLowerCase() : ("." + sfx.toLowerCase());
 }
 
-// ---------- JSON APIs ----------
-
-app.get("/kenic/tlds", (req, res) => {
-  res.json({ tlds: TLD_LIST });
-});
-
-app.get("/kenic/registrars", (req, res) => {
-  res.json({ registrars: ACCREDITED_REGISTRARS });
-});
-
-// ---------- Landing page (single-select) ----------
-
-function escHtml(s) {
-  return String(s)
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+// If name already ends with suffix, keep it; else append.
+function toFqdn(name, suffix) {
+  if (!name) return null;
+  const lower = name.toLowerCase();
+  return lower.endsWith(suffix.toLowerCase()) ? lower : (lower + suffix);
 }
 
-function tldOf(d) {
-  const i = d.indexOf(".");
-  return i > 0 ? d.substring(i) : "";
-}
-
-function renderLandingHtmlFromDomains(domains, registrars) {
-  const list = (domains || [])
-    .map(s => String(s).trim().toLowerCase())
+// Splits "a,b,c" -> ["a","b","c"] (trimmed, no empties)
+function splitCsv(csv) {
+  if (!csv) return [];
+  return String(csv)
+    .split(",")
+    .map(s => s.trim())
     .filter(Boolean);
-  const unique = [...new Set(list)];
-  const tlds = new Set(unique.map(tldOf).filter(Boolean));
-  const title = tlds.size === 1 ? `Buy ${[...tlds][0]} domains` : `Buy selected .KE domains`;
+}
 
-  const radios = unique.map((d, i) => `
-    <label style="display:flex;gap:.6rem;align-items:center;margin:.35rem 0;">
-      <input type="radio" name="pick" value="${escHtml(d)}" ${i===0 ? "checked" : ""}>
-      <code style="font-size:0.98rem">${escHtml(d)}</code>
-    </label>
-  `).join("");
+// ---- Landing page: show radios for domains & registrar list -----------------
+app.get("/kenic/landing", (req, res) => {
+  const suffix = normSuffix(req.query.suffix || ".ke");
+  // 'names' can be plain labels ("raytechgames") or fqdn; we normalize to fqdn
+  const rawNames = splitCsv(req.query.names || "");
+  const fqdns = rawNames
+    .map(n => toFqdn(n, suffix))
+    .filter(Boolean);
 
-  const cards = registrars.map(r => `
-    <div class="card">
-      <div class="card-title">${escHtml(r.name)}</div>
-      <a href="${escHtml(r.site)}" data-site="${escHtml(r.site)}" class="go" target="_blank" rel="noopener">
-        Go to registrar
-      </a>
-    </div>
-  `).join("");
+  const displaySuffix = suffix;
+  const registrars = registrarsBySuffix[suffix] || registrarsBySuffix[".ke"] || [];
 
-  // We compute deep links client-side so the chosen domain (radio) is respected.
-  // The mapping mirrors our server builders above.
-  return `<!doctype html>
+  const title = `Buy ${displaySuffix} domains`;
+  const yourNamesText = fqdns.length > 0 ? fqdns.join(", ") : "(none)";
+
+  // First domain pre-selected
+  const selectedDefault = fqdns[0] || "";
+
+  // HTML
+  res.type("html").send(`<!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escHtml(title)}</title>
+<meta charset="utf-8">
+<title>${title}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
 <style>
-  :root{color-scheme:light dark;}
-  body{
-    font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
-    max-width:980px;margin:16px auto;padding:0 16px;line-height:1.45
-  }
-  h1{font-size:clamp(24px,4vw,32px);letter-spacing:.2px;margin:.4rem 0 1rem}
-  .panel{padding:14px;border:1px solid #444;border-radius:12px;margin:.7rem 0}
-  .card{padding:14px;border:1px solid #444;border-radius:12px;margin:.7rem 0}
-  .card-title{font-weight:600;font-size:16px;margin-bottom:8px}
-  code{padding:.12em .35em;border-radius:4px;background:#eee}
-  a.go{display:inline-block;padding:10px 16px;border-radius:999px;
-       border:1px solid #6b4ce6;text-decoration:none}
-  @media (prefers-color-scheme: dark){ code{background:#333} }
+  :root { --bg:#0f0f12; --card:#17171c; --text:#e8e8ef; --muted:#bcbccd; --accent:#7b61ff; }
+  * { box-sizing:border-box; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial; }
+  body { margin:0; background:var(--bg); color:var(--text); padding:24px; }
+  h1 { margin:0 0 16px 0; font-weight:700; }
+  .muted { color: var(--muted); }
+  .wrap { max-width: 1140px; margin: 0 auto; }
+  .grid { display: grid; grid-template-columns: 1fr; gap:16px; }
+  .card { background:var(--card); border:1px solid #2a2a32; border-radius:14px; padding:18px; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .domain-list { display:grid; grid-template-columns: 1fr; gap:10px; }
+  .domain-item { display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid #2b2b34; border-radius:12px; background:#14141a; }
+  .domain-item input[type="radio"] { width:20px; height:20px; accent-color: var(--accent);}
+  .btn { appearance:none; border:1px solid #3a3a44; background:#1c1c22; color:var(--text);
+         border-radius:12px; padding:10px 14px; cursor:pointer; transition: .2s; }
+  .btn:hover { background:#23232b; border-color:#4c4c59; }
+  .btn.primary { background:var(--accent); border-color:var(--accent); color:white; }
+  .registrar { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  .r-title { font-size:18px; font-weight:600; }
+  .tiny { font-size:12px; }
+  .pill { display:inline-block; padding:3px 8px; border:1px solid #34343f; border-radius:999px; color:#c8c8d6; }
+  .selected-line { margin:10px 0 0; }
 </style>
 </head>
 <body>
-  <h1>${escHtml(title)}</h1>
+  <div class="wrap">
+    <h1>${title}</h1>
+    <p class="muted">Your names: <span id="names-line">${yourNamesText}</span></p>
 
-  <div class="panel">
-    <div style="font-weight:600;margin-bottom:.4rem">Choose one name:</div>
-    ${radios}
+    <!-- 1) Pick exactly ONE domain -->
+    <div class="card">
+      <div class="row">
+        <div><strong>Choose the domain to buy</strong></div>
+        <div class="pill">${displaySuffix}</div>
+      </div>
+      <div class="domain-list" id="domainList">
+        ${fqdns.map((fqdn, i) => `
+          <label class="domain-item">
+            <input type="radio" name="picked" value="${escapeHtml(fqdn)}" ${i===0 ? "checked" : ""}/>
+            <div>${escapeHtml(fqdn)}</div>
+          </label>
+        `).join("")}
+      </div>
+      <div id="pickedLine" class="muted selected-line">Selected: <strong>${escapeHtml(selectedDefault)}</strong></div>
+    </div>
+
+    <!-- 2) Choose a registrar -->
+    <div class="grid" style="margin-top:18px;">
+      ${registrars.map(r => `
+        <div class="card registrar">
+          <div class="r-title">${escapeHtml(r.name)}</div>
+          <div class="row" style="gap:8px;">
+            <button class="btn"
+              data-href="${escapeHtml(r.href)}"
+              ${r.searchUrl ? `data-search="${escapeHtml(r.searchUrl)}"` : ""}
+              onclick="goRegistrar(this)">Go to registrar</button>
+          </div>
+        </div>
+      `).join("")}
+    </div>
+
+    <p class="tiny muted" style="margin-top:12px;">
+      Note: some registrars don't provide a public deep link for search — in those cases
+      we’ll open their homepage and you can paste the domain.
+    </p>
   </div>
-
-  <div class="panel">
-    <div style="font-weight:600;margin-bottom:.4rem">Select a registrar:</div>
-    ${cards}
-  </div>
-
-  <p style="color:#888;font-size:12px;margin-top:12px">
-    Buttons deep-link into registrar search/cart where supported so pricing shows immediately.
-  </p>
 
 <script>
-  function selectedDomain(){
-    const r = document.querySelector('input[name="pick"]:checked');
-    return r ? r.value : '';
+  const radios = Array.from(document.querySelectorAll('input[name="picked"]'));
+  const pickedLine = document.getElementById('pickedLine');
+
+  function getPicked() {
+    const r = radios.find(x => x.checked);
+    return r ? r.value.trim() : "";
   }
-  function buildDeepLink(site, domain){
-    site = String(site||'').replace(/\\/+$/, '');
-    const host = site.replace(/^https?:\\/\\/([^/]+).*/, '$1').toLowerCase();
-    const whmcs = base => base + '/cart.php?a=add&domain=register&query=' + encodeURIComponent(domain);
-    if (host.includes('hostpinnacle.co.ke')) return 'https://hostpinnacle.co.ke/cart.php?a=add&domain=register&query=' + encodeURIComponent(domain);
-    if (host.includes('truehost.co.ke'))     return 'https://truehost.co.ke/cloud/cart.php?a=add&domain=register&query=' + encodeURIComponent(domain);
-    if (host.includes('hostafrica.ke'))      return 'https://www.hostafrica.ke/cart.php?a=add&domain=register&query=' + encodeURIComponent(domain);
-    if (host.includes('safaricom.co.ke'))    return 'https://domains.safaricom.co.ke/cart.php?a=add&domain=register&query=' + encodeURIComponent(domain);
-    if (host.includes('digitalwebframe.com'))return 'https://digitalwebframe.com/cart.php?a=add&domain=register&query=' + encodeURIComponent(domain);
-    if (host.includes('movetechsolutions.com'))return 'https://movetechsolutions.com/cart.php?a=add&domain=register&query=' + encodeURIComponent(domain);
-    if (host.includes('webhostkenya.co.ke')) return 'https://webhostkenya.co.ke/cart.php?a=add&domain=register&query=' + encodeURIComponent(domain);
-    if (host.includes('softlinkoptions.co.ke'))return 'https://softlinkoptions.co.ke/cart.php?a=add&domain=register&query=' + encodeURIComponent(domain);
-    return whmcs(site);
+
+  function setPickedLine() {
+    const v = getPicked();
+    pickedLine.innerHTML = 'Selected: <strong>' + escapeHtml(v) + '</strong>';
   }
-  document.querySelectorAll('a.go').forEach(a=>{
-    a.addEventListener('click', ev=>{
-      const d = selectedDomain();
-      if(!d){ ev.preventDefault(); alert('Pick a name first.'); return; }
-      const site = a.getAttribute('data-site');
-      a.href = buildDeepLink(site, d);
+
+  radios.forEach(r => r.addEventListener('change', setPickedLine));
+  setPickedLine();
+
+  function goRegistrar(btn) {
+    const picked = getPicked();
+    if (!picked) {
+      alert('Select one domain first.');
+      return;
+    }
+
+    const base = btn.getAttribute('data-href');
+    const tmpl = btn.getAttribute('data-search'); // optional template
+    const url = tmpl
+      ? tmpl.replace('{DOMAIN}', encodeURIComponent(picked))
+      : base;
+
+    window.open(url, '_blank'); // open in new tab
+  }
+
+  // tiny client-side version of escape for dynamic line
+  function escapeHtml(s) {
+    return (s || '').replace(/[&<>"]/g, c =>{
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]);
     });
-  });
+  }
 </script>
 </body>
-</html>`;
+</html>`);
+});
+
+// simple health
+app.get("/", (_, res) => res.send("KeNIC Option-B API up"));
+app.listen(PORT, () => console.log(`KeNIC Option-B API listening on :${PORT}`));
+
+// ---- util for server-side escaping
+function escapeHtml(s) {
+  return String(s || "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 }
-
-app.get("/kenic/landing", (req, res) => {
-  const domainsParam = String(req.query.domains || "").trim();
-  let domains = [];
-
-  if (domainsParam) {
-    domains = domainsParam.split(",").map(s => s.trim()).filter(Boolean);
-  } else {
-    // legacy fallback ?tld=.co.ke&labels=foo,bar
-    const tld = String(req.query.tld || "").trim().replace(/^\./, "");
-    const labels = String(req.query.labels || "").split(",").map(s=>s.trim()).filter(Boolean);
-    domains = labels.map(l => `${l}.${tld}`).filter(Boolean);
-  }
-
-  res.set("Content-Type", "text/html; charset=utf-8");
-  res.send(renderLandingHtmlFromDomains(domains, ACCREDITED_REGISTRARS));
-});
-
-// Health
-app.get("/health", (req, res) => res.json({ ok: true }));
-
-// Listen
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log("KeNIC Option-B API listening on :", PORT);
-});
