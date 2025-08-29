@@ -1,29 +1,40 @@
-// server.js — KeNIC TLD list + simple landing page + (optional) availability check
+// server.js — KeNIC TLDs + registrars + simple landing page + (optional) RDAP checks
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
+const cors = require('cors');
 
 const app = express();
+app.use(cors());                // fine for Unity (mobile/desktop). WebGL also needs this.
 app.use(bodyParser.json());
 
-/* ---------- KeNIC namespaces ---------- */
-// Open: .ke (second-level), .co.ke, .or.ke, .ne.ke, .me.ke, .info.ke, .mobi.ke
-// Restricted: .ac.ke, .sc.ke, .go.ke
-const KENIC_TLDS = [
-  { tld: ".ke",     restricted: false, note: "Second-level .ke" },
-  { tld: ".co.ke",  restricted: false },
-  { tld: ".or.ke",  restricted: false },
-  { tld: ".ne.ke",  restricted: false },
-  { tld: ".me.ke",  restricted: false },
-  { tld: ".info.ke",restricted: false },
-  { tld: ".mobi.ke",restricted: false },
-  { tld: ".ac.ke",  restricted: true  },
-  { tld: ".sc.ke",  restricted: true  },
-  { tld: ".go.ke",  restricted: true  },
+/* -------------------- KeNIC TLD catalog -------------------- */
+// Open registrations:
+const OPEN_TLDS = [
+  ".ke",        // second-level .ke (open, but pricier)
+  ".co.ke",
+  ".or.ke",
+  ".ne.ke",
+  ".me.ke",
+  ".info.ke",
+  ".mobi.ke",
 ];
 
-/* ---------- Simple list of registrars to show on the landing page ---------- */
+// Restricted namespaces (extra eligibility rules):
+const RESTRICTED_TLDS = [
+  ".ac.ke",
+  ".sc.ke",
+  ".go.ke",
+];
+
+// Return a normalized list with flags
+const KENIC_TLDS = [
+  ...OPEN_TLDS.map(t => ({ tld: t, restricted: false })),
+  ...RESTRICTED_TLDS.map(t => ({ tld: t, restricted: true })),
+];
+
+/* -------------------- Registrar directory -------------------- */
 const ACCREDITED_REGISTRARS = [
   { name: "HostPinnacle", site: "https://www.hostpinnacle.co.ke/" },
   { name: "Truehost", site: "https://truehost.co.ke/" },
@@ -35,81 +46,118 @@ const ACCREDITED_REGISTRARS = [
   { name: "Softlink Options", site: "https://softlinkoptions.co.ke/" }
 ];
 
-/* ---------- Health ---------- */
-app.get('/health', (_, res) => res.json({ ok: true }));
+/* -------------------- Health -------------------- */
+app.get('/health', (_req, res) => res.json({ ok: true }));
 
-/* ---------- Return all TLDs ---------- */
-app.get('/kenic/tlds', (_, res) => {
+/* -------------------- TLD list -------------------- */
+app.get('/kenic/tlds', (_req, res) => {
   res.json({ tlds: KENIC_TLDS });
 });
 
-/* ---------- (Optional) RDAP availability for labels + TLD ---------- */
+/* -------------------- Registrar list -------------------- */
+app.get('/kenic/registrars', (_req, res) => {
+  res.json({ registrars: ACCREDITED_REGISTRARS });
+});
+
+/* -------------------- RDAP availability (optional) -------------------- */
+// Check a full domain via RDAP. 200 => taken, 404 => likely available.
 async function rdapCheck(domain) {
-  const fqdn = domain.toLowerCase();
+  const fqdn = (domain || "").toLowerCase();
   try {
     const url = fqdn.endsWith(".ke")
       ? `https://rdap.kenic.or.ke/domain/${fqdn}`
       : `https://rdap.org/domain/${fqdn}`;
     await axios.get(url, { timeout: 8000 });
-    return { domain, available: false };           // 200 => registered
+    return { domain: fqdn, available: false };           // 200 OK => registered
   } catch (e) {
-    return { domain, available: e?.response?.status === 404 }; // 404 => likely free
+    const available = e?.response?.status === 404;       // 404 => not found => available
+    return { domain: fqdn, available };
   }
 }
 
+// POST { labels: ["raytechgames","mybrand"], tld: ".co.ke" }
 app.post('/kenic/check-for-tld', async (req, res) => {
-  const labels = (req.body.labels || [])
-    .map(s => String(s).trim().toLowerCase())
-    .filter(Boolean);
+  const labels = Array.isArray(req.body.labels) ? req.body.labels : [];
   let tld = String(req.body.tld || "").trim().toLowerCase();
   if (!labels.length || !tld) return res.status(400).json({ error: "labels[] and tld required" });
 
-  tld = tld.replace(/^\./, ""); // accept ".ke" or "ke"
-  const domains = [...new Set(labels.map(l => `${l}.${tld}`))];
+  // accept ".co.ke" or "co.ke"
+  tld = tld.replace(/^\./, "");
+
+  // dedupe + sanitize
+  const unique = [...new Set(labels.map(s => String(s).trim().toLowerCase()).filter(Boolean))];
+  const domains = unique.map(l => `${l}.${tld}`);
+
   const results = await Promise.all(domains.map(rdapCheck));
   res.json({ tld, results });
 });
 
-/* ---------- Minimal HTML landing page per TLD ---------- */
-function renderLandingHtml(tld, labels) {
-  const safeTld = tld.startsWith('.') ? tld : `.${tld}`;
+/* -------------------- Minimal landing page -------------------- */
+function renderLandingHtml(tldInput, labels) {
+  const safeTld = (tldInput || "").startsWith('.') ? tldInput : `.${tldInput}`;
   const title = `Buy ${safeTld} domains`;
-  const labelsHtml = labels && labels.length
-    ? `<p><strong>Your names:</strong> ${labels.map(l => `${l}${safeTld}`).join(', ')}</p>`
+
+  // unique, safe labels
+  const clean = (labels || [])
+    .map(s => String(s).trim().toLowerCase())
+    .filter(Boolean);
+  const unique = [...new Set(clean)];
+
+  const namesHtml = unique.length
+    ? `<p><strong>Your names:</strong> ${unique.map(l => `${l}${safeTld}`).join(', ')}</p>`
     : '';
 
   const cards = ACCREDITED_REGISTRARS.map(r => `
-    <div style="padding:14px;border:1px solid #ddd;border-radius:10px;margin:10px 0;">
-      <div style="font-weight:600;font-size:16px;margin-bottom:6px;">${r.name}</div>
-      <a href="${r.site}" target="_blank" style="
-        display:inline-block;padding:10px 16px;border-radius:8px;
-        border:1px solid #222;text-decoration:none;">Go to registrar</a>
+    <div style="padding:14px;border:1px solid #ddd;border-radius:12px;margin:10px 0;">
+      <div style="font-weight:600;font-size:16px;margin-bottom:8px;">${r.name}</div>
+      <a href="${r.site}" target="_blank" rel="noopener" style="
+        display:inline-block;padding:10px 16px;border-radius:999px;
+        border:1px solid #6b4ce6;text-decoration:none;">
+        Go to registrar
+      </a>
     </div>
   `).join('');
 
   return `<!doctype html>
-  <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>${title}</title></head>
-  <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:640px;margin:12px auto;padding:0 12px;">
-    <h2 style="margin:8px 0 6px 0;">${title}</h2>
-    ${labelsHtml}
-    <p>Select a registrar below to complete your purchase:</p>
-    ${cards}
-    <p style="color:#666;margin-top:18px;font-size:12px">
-      Tip: on the registrar site, search the exact name shown above (e.g. <code>yourname${safeTld}</code>).
-    </p>
-  </body></html>`;
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title}</title>
+<style>
+  :root{color-scheme:light dark;}
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+       max-width:860px;margin:12px auto;padding:0 16px;line-height:1.45}
+  h1{font-size:clamp(24px,4vw,32px);letter-spacing:.2px;margin:.4rem 0 1rem 0}
+  .muted{color:#666}
+  code{padding:.1em .3em;border-radius:4px;background:#eee}
+  @media (prefers-color-scheme: dark){ code{background:#333} }
+</style>
+</head>
+<body>
+  <h1>${title}</h1>
+  ${namesHtml}
+  <p>Select a registrar below to complete your purchase:</p>
+  ${cards}
+  <p class="muted" style="margin-top:18px;font-size:12px">
+    Tip: on the registrar site, search exactly the name shown above (e.g. <code>yourname${safeTld}</code>).
+  </p>
+</body></html>`;
 }
 
+// GET /kenic/landing?tld=.co.ke&labels=raytechgames,mybrand
 app.get('/kenic/landing', (req, res) => {
   let tld = String(req.query.tld || '').trim().toLowerCase().replace(/^\./,'');
   if (!tld) return res.status(400).send('Missing ?tld');
+
   const labels = String(req.query.labels || '')
-    .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+
   res.set('Content-Type','text/html; charset=utf-8');
   res.send(renderLandingHtml(tld, labels));
 });
 
-/* ---------- Start ---------- */
+/* -------------------- Boot -------------------- */
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`KeNIC Option-B API listening on :${PORT}`));
+app.listen(PORT, () => console.log(`KeNIC backend listening on :${PORT}`));
