@@ -75,4 +75,4 @@ For reviewers (1-minute technical note)
 
 Unity 6 (Android, IL2CPP, API level 34+).
 
-Scripts of interest: DomainSearchAndSpawn.cs, DomainPickup.cs, CartUI.cs
+Scripts of interest: DomainSearchAndSpawn.cs, DomainPickup.cs, CartUI.cs KenicTldListSimple
