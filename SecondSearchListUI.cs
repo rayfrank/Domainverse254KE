@@ -1,10 +1,14 @@
 // SecondSearchListUI.cs
-// Searches RDAP, updates status, swaps panels, and fills a ScrollView list.
-// No world spawning. Auto-wires ScrollView layout so rows never overlap,
-// and scales row text so it’s easy to read on mobile.
+// Searches RDAP, populates a ScrollView with readable rows,
+// lets the user SELECT exactly one domain, shows which one is selected,
+// and on Checkout opens your deployed landing page with the remaining
+// domains in this list (your "cart"). "Remove Selected" removes just the
+// selected row from THIS UI (no external cart link).
 
+using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using TMPro;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -15,30 +19,30 @@ public class SecondSearchListUI : MonoBehaviour
     [Header("FIRST panel (where user types)")]
     public TMP_InputField input;
     public Button searchButton;
-    public TextMeshProUGUI statusText;
+    public TextMeshProUGUI statusText;   // used while searching
     public GameObject firstPanel;
 
     [Header("SECOND panel (results list)")]
     public GameObject secondPanel;
-    public TextMeshProUGUI secondStatusText;
+    public TextMeshProUGUI secondStatusText; // shows result summary + selection
 
     [Header("ScrollView wiring")]
-    public ScrollRect scrollRect;              // optional; auto-find if null
-    public RectTransform viewport;             // optional; will use content.parent if null
-    public RectTransform content;              // REQUIRED: ScrollView/Viewport/Content
+    public ScrollRect scrollRect;         // optional; auto-find if null
+    public RectTransform viewport;        // optional; will use content.parent if null
+    public RectTransform content;         // REQUIRED: ScrollView/Viewport/Content
 
     [Header("Row prefab + layout")]
-    public GameObject rowPrefab;               // your item prefab (root is the row)
-    public float rowHeight = 72f;              // baseline height used if prefab has none
-    public float rowSpacing = 12f;             // spacing between rows
+    public GameObject rowPrefab;          // optional; if null, a fallback row is created
+    public float rowHeight = 72f;
+    public float rowSpacing = 12f;
 
     [Header("Row text style")]
     public bool useAutoSize = true;
-    public int rowFontSize = 44;     // when useAutoSize = false
-    public int autoSizeMin = 36;     // when useAutoSize = true
+    public int rowFontSize = 44;          // when useAutoSize = false
+    public int autoSizeMin = 36;          // when useAutoSize = true
     public int autoSizeMax = 64;
-    public float rowPadX = 24f;      // TMP margin left/right
-    public float rowPadY = 14f;      // TMP margin top/bottom
+    public float rowPadX = 24f;
+    public float rowPadY = 14f;
 
     [Header("Flow")]
     public float panelSwitchDelay = 1.0f;
@@ -48,14 +52,45 @@ public class SecondSearchListUI : MonoBehaviour
     public bool bypassAvailabilityForTest = false;
     public bool logVerbose = true;
 
+    [Header("Checkout target")]
+    [Tooltip("Your deployed backend base URL, e.g. https://domaininverse254ke.onrender.com")]
+    public string backendBase = "https://domainverse254ke.onrender.com";
+    public Button checkoutButton;         // tap -> open landing
+    public Button removeSelectedButton;   // tap -> remove selected row (local only)
+
+    [Header("Checkout behaviour")]
+    [Tooltip("When true (default), Checkout sends ALL remaining rows (cart).")]
+    public bool includeAllRemainingOnCheckout = true;
+    [Tooltip("If a domain is selected, put it first so landing preselects it.")]
+    public bool placeSelectedFirstInLanding = true;
+
+    // ---------- internal state ----------
+    readonly Dictionary<string, GameObject> rowMap =
+        new Dictionary<string, GameObject>(StringComparer.OrdinalIgnoreCase);
+    string selected;                      // exactly one selected domain (or null)
+
     void Awake()
     {
         if (searchButton) searchButton.onClick.AddListener(() => StartCoroutine(RunSearch()));
 
-        if (firstPanel)  firstPanel.SetActive(true);
+        if (checkoutButton)
+        {
+            checkoutButton.onClick.RemoveAllListeners();
+            checkoutButton.onClick.AddListener(OnCheckout);
+        }
+
+        if (removeSelectedButton)
+        {
+            removeSelectedButton.onClick.RemoveAllListeners();
+            removeSelectedButton.onClick.AddListener(OnRemoveSelected);
+        }
+
+        if (firstPanel) firstPanel.SetActive(true);
         if (secondPanel) secondPanel.SetActive(false);
 
         EnsureScrollViewLayout();
+        SetSelected(null);
+        UpdateSelectionStatus();
     }
 
     // ---------- SEARCH ----------
@@ -113,11 +148,15 @@ public class SecondSearchListUI : MonoBehaviour
 
         yield return new WaitForSeconds(panelSwitchDelay);
 
-        if (firstPanel)  firstPanel.SetActive(false);
+        if (firstPanel) firstPanel.SetActive(false);
         if (secondPanel) secondPanel.SetActive(true);
         if (secondStatusText) secondStatusText.text = line;
 
         if (searchButton) searchButton.interactable = true;
+
+        // default: no preselection
+        SetSelected(null);
+        UpdateSelectionStatus();
     }
 
     string BuildRdapUrl(string fqdn)
@@ -151,6 +190,8 @@ public class SecondSearchListUI : MonoBehaviour
 
         foreach (var d in domains)
         {
+            if (rowMap.ContainsKey(d)) continue;
+
             GameObject row = rowPrefab
                 ? Instantiate(rowPrefab, content)
                 : CreateDefaultRow(content);
@@ -164,28 +205,116 @@ public class SecondSearchListUI : MonoBehaviour
 
             ApplyTextStyle(row);
 
-            // Optional: copy-to-clipboard if row has a Button
-            var btn = row.GetComponentInChildren<Button>(true);
-            if (btn)
+            // Clicking a row selects that domain
+            var btn = row.GetComponentInChildren<Button>(true) ?? row.AddComponent<Button>();
+            btn.onClick.RemoveAllListeners();
+            btn.onClick.AddListener(() =>
             {
-                btn.onClick.RemoveAllListeners();
-                btn.onClick.AddListener(() =>
-                {
-                    GUIUtility.systemCopyBuffer = d;
-                    if (secondStatusText) secondStatusText.text = $"Copied '{d}'";
-                });
-            }
+                SetSelected(d);
+                UpdateSelectionStatus();
+            });
+
+            rowMap[d] = row;
+            UpdateRowVisual(d);
         }
 
-        Canvas.ForceUpdateCanvases();
-        LayoutRebuilder.ForceRebuildLayoutImmediate(content);
+        ForceLayout();
     }
 
     void ClearList()
     {
-        if (!content) return;
-        for (int i = content.childCount - 1; i >= 0; i--)
-            Destroy(content.GetChild(i).gameObject);
+        foreach (var kv in rowMap)
+            if (kv.Value) Destroy(kv.Value);
+        rowMap.Clear();
+    }
+
+    // ---------- SELECTION ----------
+    void SetSelected(string domainOrNull)
+    {
+        selected = string.IsNullOrWhiteSpace(domainOrNull) ? null : domainOrNull.Trim();
+
+        if (checkoutButton) checkoutButton.interactable = rowMap.Count > 0; // checkout enabled if anything left
+        if (removeSelectedButton) removeSelectedButton.interactable = !string.IsNullOrEmpty(selected);
+
+        foreach (var key in rowMap.Keys.ToArray())
+            UpdateRowVisual(key);
+    }
+
+    void UpdateRowVisual(string domain)
+    {
+        if (!rowMap.TryGetValue(domain, out var row) || row == null) return;
+
+        var img = row.GetComponent<Image>() ?? row.AddComponent<Image>();
+        bool isSel = !string.IsNullOrEmpty(selected) &&
+                     selected.Equals(domain, StringComparison.OrdinalIgnoreCase);
+
+        img.color = isSel ? new Color(1f, 1f, 1f, 0.22f) : new Color(1f, 1f, 1f, 0.10f);
+
+        var outline = row.GetComponent<Outline>() ?? row.AddComponent<Outline>();
+        outline.effectColor = isSel ? new Color(1f, 0.6f, 0.2f, 0.65f) : new Color(1f, 1f, 1f, 0.25f);
+        outline.effectDistance = isSel ? new Vector2(3f, -3f) : new Vector2(2f, -2f);
+    }
+
+    void UpdateSelectionStatus()
+    {
+        string line = string.IsNullOrEmpty(selected) ? "Selected: (none)" : $"Selected: {selected}";
+        if (secondStatusText) secondStatusText.text = line;
+    }
+
+    // ---------- BUTTONS ----------
+    void OnCheckout()
+    {
+        // collect the "cart": everything still in the list
+        var cart = GetCartDomains().ToList();
+        if (cart.Count == 0)
+        {
+            if (secondStatusText) secondStatusText.text = "Cart is empty.";
+            return;
+        }
+
+        // optionally put selected first so landing preselects it
+        if (placeSelectedFirstInLanding && !string.IsNullOrEmpty(selected))
+        {
+            cart = cart
+                .OrderBy(d => d.Equals(selected, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .ToList();
+        }
+
+        string domainsCsv = BuildDomainsCsv(cart);
+        string url = $"{backendBase.TrimEnd('/')}/kenic/landing?domains={domainsCsv}";
+        Application.OpenURL(url);
+
+        if (secondStatusText) secondStatusText.text = $"Opening… {cart.Count} name(s)";
+    }
+
+    void OnRemoveSelected()
+    {
+        if (string.IsNullOrEmpty(selected)) return;
+
+        if (rowMap.TryGetValue(selected, out var row) && row)
+            Destroy(row);
+        rowMap.Remove(selected);
+
+        SetSelected(null);
+        UpdateSelectionStatus();
+        ForceLayout();
+    }
+
+    // ---------- CART HELPERS ----------
+    IEnumerable<string> GetCartDomains()
+    {
+        // all keys that still have a row alive
+        foreach (var kv in rowMap)
+        {
+            if (kv.Value) yield return kv.Key;
+        }
+    }
+
+    string BuildDomainsCsv(IEnumerable<string> names)
+    {
+        // encode EACH name, join with commas (do not encode the commas)
+        var encoded = names.Select(Uri.EscapeDataString);
+        return string.Join(",", encoded);
     }
 
     // ---------- AUTO-LAYOUT WIRING ----------
@@ -221,7 +350,7 @@ public class SecondSearchListUI : MonoBehaviour
         // Content: stretch horizontally, top-anchored
         content.anchorMin = new Vector2(0f, 1f);
         content.anchorMax = new Vector2(1f, 1f);
-        content.pivot     = new Vector2(0.5f, 1f);
+        content.pivot = new Vector2(0.5f, 1f);
         content.anchoredPosition = Vector2.zero;
         content.localScale = Vector3.one;
         content.localRotation = Quaternion.identity;
@@ -238,10 +367,10 @@ public class SecondSearchListUI : MonoBehaviour
         var fitter = content.GetComponent<ContentSizeFitter>();
         if (!fitter) fitter = content.gameObject.AddComponent<ContentSizeFitter>();
         fitter.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
-        fitter.verticalFit   = ContentSizeFitter.FitMode.PreferredSize;
+        fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
     }
 
-    // Make each row participate in layout correctly
+    // Guarantee each row participates in layout correctly
     void NormalizeRow(GameObject row)
     {
         var rt = row.GetComponent<RectTransform>();
@@ -249,26 +378,21 @@ public class SecondSearchListUI : MonoBehaviour
         {
             rt.anchorMin = new Vector2(0f, 1f);
             rt.anchorMax = new Vector2(1f, 1f);
-            rt.pivot     = new Vector2(0.5f, 1f);
+            rt.pivot = new Vector2(0.5f, 1f);
             rt.anchoredPosition = Vector2.zero;
-            rt.localScale = Vector3.one;            // squash weird prefab scaling
+            rt.localScale = Vector3.one;
             rt.localRotation = Quaternion.identity;
         }
 
-        var le = row.GetComponent<LayoutElement>();
-        if (!le) le = row.AddComponent<LayoutElement>();
-        le.ignoreLayout = false;
-
-        // guarantee a minimum height even if prefab has none
+        var le = row.GetComponent<LayoutElement>() ?? row.AddComponent<LayoutElement>();
         if (le.minHeight < rowHeight) le.minHeight = rowHeight;
         if (le.preferredHeight < rowHeight) le.preferredHeight = rowHeight;
 
-        // a root ContentSizeFitter fights the parent layout — remove it
+        // Remove any ContentSizeFitter on the row root (fights layout)
         var badFitter = row.GetComponent<ContentSizeFitter>();
         if (badFitter) Destroy(badFitter);
     }
 
-    // Apply big, readable text + margins to all TMPs in the row
     void ApplyTextStyle(GameObject row)
     {
         var tmps = row.GetComponentsInChildren<TMP_Text>(true);
@@ -291,10 +415,8 @@ public class SecondSearchListUI : MonoBehaviour
             t.overflowMode = TextOverflowModes.Truncate;
         }
 
-        // Ensure row is tall enough for the chosen font
         float minH = (useAutoSize ? autoSizeMin : rowFontSize) + (rowPadY * 2f) + 8f;
-        var le = row.GetComponent<LayoutElement>();
-        if (!le) le = row.AddComponent<LayoutElement>();
+        var le = row.GetComponent<LayoutElement>() ?? row.AddComponent<LayoutElement>();
         if (le.minHeight < minH) le.minHeight = minH;
         if (le.preferredHeight < minH) le.preferredHeight = minH;
     }
@@ -304,28 +426,53 @@ public class SecondSearchListUI : MonoBehaviour
     {
         var row = new GameObject("_Row", typeof(RectTransform), typeof(Image));
         row.transform.SetParent(parent, false);
-        row.GetComponent<Image>().color = new Color(1, 1, 1, 0); // transparent
+        row.GetComponent<Image>().color = new Color(1, 1, 1, 0.10f);
 
+        // Label
         var labelGO = new GameObject("Label", typeof(RectTransform));
         labelGO.transform.SetParent(row.transform, false);
-        var label = labelGO.AddComponent<TextMeshProUGUI>();
-        label.fontSize = rowFontSize;
-        label.margin = new Vector4(rowPadX, rowPadY, rowPadX, rowPadY);
+        var lrt = labelGO.GetComponent<RectTransform>();
+        lrt.anchorMin = new Vector2(0f, 0f);
+        lrt.anchorMax = new Vector2(1f, 1f);
+        lrt.offsetMin = new Vector2(rowPadX, rowPadY);
+        lrt.offsetMax = new Vector2(-rowPadX, -rowPadY);
 
-        var hlg = row.AddComponent<HorizontalLayoutGroup>();
-        hlg.padding = new RectOffset((int)rowPadX, (int)rowPadX, (int)rowPadY, (int)rowPadY);
-        hlg.childControlHeight = true;
-        hlg.childControlWidth = true;
-        hlg.childForceExpandWidth = true;
+        var label = labelGO.AddComponent<TextMeshProUGUI>();
+        label.enableAutoSizing = useAutoSize;
+        if (!useAutoSize) label.fontSize = rowFontSize;
+        label.fontSizeMin = autoSizeMin;
+        label.fontSizeMax = autoSizeMax;
+        label.alignment = TextAlignmentOptions.MidlineLeft;
+        label.text = "example.co.ke";
+
+        // Clickable area
+        var btn = row.AddComponent<Button>();
+        var colors = btn.colors;
+        colors.highlightedColor = new Color(1f, 1f, 1f, 0.18f);
+        colors.pressedColor = new Color(1f, 1f, 1f, 0.24f);
+        btn.colors = colors;
+
+        // Baseline layout
+        var le = row.AddComponent<LayoutElement>();
+        le.minHeight = Mathf.Max(rowHeight, 56f);
+        le.preferredHeight = le.minHeight;
 
         return row;
     }
 
-    // Optional: wire to a Back button on the results panel
+    // Optional: wire to a Back button if you still want it
     public void BackToFirstPanel()
     {
         if (secondPanel) secondPanel.SetActive(false);
-        if (firstPanel)  firstPanel.SetActive(true);
+        if (firstPanel) firstPanel.SetActive(true);
     }
-    
+
+    // Force the ScrollView to rebuild its layout now
+    void ForceLayout()
+    {
+        if (!content) return;
+        Canvas.ForceUpdateCanvases();
+        LayoutRebuilder.ForceRebuildLayoutImmediate(content);
+        LayoutRebuilder.MarkLayoutForRebuild(content);
+    }
 }
