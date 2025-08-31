@@ -1,7 +1,12 @@
 Domainverse254KE
 
+
 A mobile app that turns .KE domain search into a walk-around experience. Type a word → domain ideas appear in the city → walk into one to “pick” it → add to cart.
 It also includes a normal (non-game) flow where you can acquire domains directly.
+
+Download DomainVerseKE on Game Jolt at this link :
+
+https://gamejolt.com/games/DomainVerseKE/1016431
 
 What you can do
 
