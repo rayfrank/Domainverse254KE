@@ -6,6 +6,8 @@ It also includes a normal (non-game) flow where you can acquire domains directly
 
 Download DomainVerseKE on Game Jolt at this link :
 
+https://gamejolt.com/games/DomainVerseKE/1016431
+
 As part of the 5 Points Challenge, I registered a new .me.ke domain: http://domainverse.me.ke to showcase the project. 
 
 What you can do
